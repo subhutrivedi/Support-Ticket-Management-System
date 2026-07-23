@@ -28,7 +28,7 @@ The API persists the ticket and its `CREATED` event in one database transaction 
 
 ### Data model choices
 
-`tickets` is the current operational projection. `ticket_events` holds the time-ordered audit trail and has a compound index on `(ticket_id, created_at)`. Ticket list filters use compound indexes paired with `created_at` for common operational queries. Database enums prevent invalid category, priority, and status values.
+`tickets` is the current operational projection. `ticket_events` holds the time-ordered audit trail and has a compound index on `(ticket_id, created_at)`. Ticket list filters use compound indexes paired with `created_at` for common operational queries. Database enums prevent invalid category, priority, and status values. Check constraints enforce meaningful ticket fields, a bounded `spam_score`, complete async-enrichment output, and the valid shape of each audit event—even for direct database writes.
 
 ## Quick start
 

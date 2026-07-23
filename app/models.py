@@ -1,7 +1,17 @@
 import enum
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -33,6 +43,24 @@ class TicketCategory(enum.StrEnum):
 class Ticket(Base):
     __tablename__ = "tickets"
     __table_args__ = (
+        CheckConstraint("length(trim(customer_name)) >= 2", name="ck_tickets_customer_name_length"),
+        CheckConstraint(
+            "customer_email = trim(customer_email) "
+            "AND customer_email LIKE '%_@_%.__%'",
+            name="ck_tickets_customer_email_format",
+        ),
+        CheckConstraint("length(trim(subject)) >= 3", name="ck_tickets_subject_length"),
+        CheckConstraint("length(trim(description)) >= 10", name="ck_tickets_description_length"),
+        CheckConstraint(
+            "spam_score IS NULL OR spam_score BETWEEN 0 AND 100",
+            name="ck_tickets_spam_score_range",
+        ),
+        CheckConstraint(
+            "(processing_summary IS NULL AND assigned_department IS NULL AND spam_score IS NULL) "
+            "OR (processing_summary IS NOT NULL AND assigned_department IS NOT NULL "
+            "AND spam_score IS NOT NULL)",
+            name="ck_tickets_processing_fields_complete",
+        ),
         Index("ix_tickets_status_created_at", "status", "created_at"),
         Index("ix_tickets_priority_created_at", "priority", "created_at"),
         Index("ix_tickets_category_created_at", "category", "created_at"),
@@ -68,7 +96,21 @@ class Ticket(Base):
 
 class TicketEvent(Base):
     __tablename__ = "ticket_events"
-    __table_args__ = (Index("ix_ticket_events_ticket_id_created_at", "ticket_id", "created_at"),)
+    __table_args__ = (
+        CheckConstraint("length(trim(actor)) >= 1", name="ck_ticket_events_actor_nonempty"),
+        CheckConstraint(
+            "event_type IN ('CREATED', 'STATUS_CHANGED', 'AUTO_PROCESSED')",
+            name="ck_ticket_events_event_type",
+        ),
+        CheckConstraint(
+            "(event_type = 'CREATED' AND from_status IS NULL AND to_status = 'OPEN') "
+            "OR (event_type = 'STATUS_CHANGED' AND from_status IS NOT NULL "
+            "AND to_status IS NOT NULL AND from_status <> to_status) "
+            "OR (event_type = 'AUTO_PROCESSED' AND from_status IS NULL AND to_status IS NULL)",
+            name="ck_ticket_events_status_shape",
+        ),
+        Index("ix_ticket_events_ticket_id_created_at", "ticket_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     ticket_id: Mapped[int] = mapped_column(

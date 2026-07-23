@@ -1,10 +1,11 @@
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import InvalidStateTransitionError
 from app.db import Base
-from app.models import TicketCategory, TicketPriority, TicketStatus
+from app.models import TicketCategory, TicketEvent, TicketPriority, TicketStatus
 from app.schemas import TicketCreate
 from app.services import TicketService
 
@@ -64,3 +65,43 @@ def test_processing_enriches_ticket(db: Session) -> None:
     assert processed.assigned_department == "payments"
     assert processed.processing_summary is not None
     assert any(event.event_type == "AUTO_PROCESSED" for event in processed.events)
+
+
+def test_database_rejects_invalid_enrichment_state(db: Session) -> None:
+    ticket = TicketService(db).create_ticket(
+        TicketCreate(
+            customer_name="Jane Doe",
+            customer_email="jane@example.com",
+            subject="Need payment help",
+            description="I need help finding a completed bank payment.",
+            category=TicketCategory.PAYMENT,
+        )
+    )
+    ticket.spam_score = 101
+
+    with pytest.raises(IntegrityError, match="spam_score"):
+        db.commit()
+
+
+def test_database_rejects_invalid_audit_event_shape(db: Session) -> None:
+    ticket = TicketService(db).create_ticket(
+        TicketCreate(
+            customer_name="Jane Doe",
+            customer_email="jane@example.com",
+            subject="Need payment help",
+            description="I need help finding a completed bank payment.",
+            category=TicketCategory.PAYMENT,
+        )
+    )
+    db.add(
+        TicketEvent(
+            ticket_id=ticket.id,
+            event_type="CREATED",
+            from_status=TicketStatus.OPEN,
+            to_status=TicketStatus.OPEN,
+            actor="tester",
+        )
+    )
+
+    with pytest.raises(IntegrityError, match="status_shape"):
+        db.commit()
