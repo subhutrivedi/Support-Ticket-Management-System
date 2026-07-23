@@ -9,6 +9,8 @@ from app.models import (
     ActorType,
     Agent,
     Customer,
+    DeadLetterMessage,
+    OutboxMessage,
     ProcessingStatus,
     Ticket,
     TicketCategory,
@@ -45,6 +47,7 @@ class TicketService:
                 actor_type=ActorType.CUSTOMER,
             )
         )
+        self.db.add(OutboxMessage(ticket_id=ticket.id, topic="ticket.process"))
         self.db.commit()
         self.db.refresh(ticket)
         return ticket
@@ -172,6 +175,15 @@ class TicketService:
             return
         ticket.processing_status = ProcessingStatus.PENDING if retrying else ProcessingStatus.FAILED
         ticket.processing_error = str(error)[:1000]
+        if not retrying:
+            self.db.add(
+                DeadLetterMessage(
+                    ticket_id=ticket.id,
+                    task_id=task_id,
+                    error=ticket.processing_error,
+                    attempts=ticket.processing_attempts,
+                )
+            )
         self.db.commit()
 
     def process_ticket(self, ticket_id: int, task_id: str) -> None:

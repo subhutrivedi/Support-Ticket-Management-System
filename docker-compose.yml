@@ -25,6 +25,18 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+  beat:
+    build: .
+    command: celery -A app.worker.celery_app beat --loglevel=INFO
+    volumes: [".:/app"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ticketflow:ticketflow@db:5432/ticketflow}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
   db:
     image: postgres:16-alpine
     environment:

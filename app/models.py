@@ -56,6 +56,11 @@ class ProcessingStatus(enum.StrEnum):
     FAILED = "FAILED"
 
 
+class OutboxStatus(enum.StrEnum):
+    PENDING = "PENDING"
+    PUBLISHED = "PUBLISHED"
+
+
 class Actor(Base):
     __tablename__ = "actors"
     __table_args__ = (UniqueConstraint("id", "actor_type", name="uq_actors_id_type"),)
@@ -181,6 +186,7 @@ class Ticket(Base):
         back_populates="ticket", cascade="all, delete-orphan"
     )
     customer: Mapped[Customer] = relationship(back_populates="tickets")
+    outbox_messages: Mapped[list["OutboxMessage"]] = relationship(back_populates="ticket")
 
 
 class TicketEvent(Base):
@@ -229,3 +235,40 @@ class TicketEvent(Base):
     )
     ticket: Mapped[Ticket] = relationship(back_populates="events")
     actor: Mapped[Actor] = relationship(back_populates="events")
+
+
+class OutboxMessage(Base):
+    __tablename__ = "outbox_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False
+    )
+    topic: Mapped[str] = mapped_column(String(80), nullable=False)
+    status: Mapped[OutboxStatus] = mapped_column(
+        Enum(OutboxStatus, name="outbox_status"),
+        nullable=False,
+        default=OutboxStatus.PENDING,
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ticket: Mapped[Ticket] = relationship(back_populates="outbox_messages")
+
+
+class DeadLetterMessage(Base):
+    __tablename__ = "dead_letter_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("tickets.id", ondelete="RESTRICT"), nullable=False
+    )
+    task_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    error: Mapped[str] = mapped_column(Text, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

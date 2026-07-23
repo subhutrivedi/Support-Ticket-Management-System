@@ -6,9 +6,11 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from prometheus_client import Counter, generate_latest
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.responses import Response
 
 from app.core.config import get_settings
 from app.core.errors import DomainError
@@ -24,11 +26,12 @@ from app.schemas import (
     TicketStatusUpdate,
 )
 from app.services import TicketService
-from app.worker import process_ticket_task
+from app.worker import dispatch_outbox_messages
 
 settings = get_settings()
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
+ticket_creation_counter = Counter("ticketflow_tickets_created_total", "Tickets created")
 
 
 @asynccontextmanager
@@ -121,6 +124,11 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "ticketflow"}
 
 
+@app.get("/metrics", include_in_schema=False)
+def metrics() -> Response:
+    return Response(generate_latest(), media_type="text/plain; version=0.0.4")
+
+
 @app.get("/ready", tags=["system"])
 def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
@@ -135,8 +143,9 @@ def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
 )
 def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)) -> TicketResponse:
     ticket = TicketService(db).create_ticket(payload)
+    ticket_creation_counter.inc()
     if settings.auto_process_tickets:
-        process_ticket_task.delay(ticket.id)
+        dispatch_outbox_messages.delay()
     return TicketResponse.model_validate(ticket)
 
 
