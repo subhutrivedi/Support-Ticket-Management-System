@@ -1,0 +1,47 @@
+services:
+  api:
+    build: .
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    volumes: [".:/app"]
+    ports: ["8000:8000"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ticketflow:ticketflow@db:5432/ticketflow}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AUTO_PROCESS_TICKETS: ${AUTO_PROCESS_TICKETS:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  worker:
+    build: .
+    command: celery -A app.worker.celery_app worker --loglevel=INFO
+    volumes: [".:/app"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ticketflow:ticketflow@db:5432/ticketflow}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      db: { condition: service_healthy }
+      redis: { condition: service_healthy }
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ticketflow
+      POSTGRES_USER: ticketflow
+      POSTGRES_PASSWORD: ticketflow
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ticketflow -d ticketflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
