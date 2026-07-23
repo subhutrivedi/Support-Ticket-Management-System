@@ -8,7 +8,7 @@ A production-style support ticket API designed for a fintech operating model: ti
 - PostgreSQL relational model: `tickets` plus immutable-style `ticket_events` audit history
 - Enum-backed priority, category, and lifecycle statuses
 - Pagination and filters for status, priority, and category
-- Service/repository separation, typed Pydantic DTOs, request validation, structured error envelope, request IDs, and logging
+- Service/repository separation, typed Pydantic DTOs, request validation, structured error envelope, request IDs, JSON logging, and readiness checks
 - Celery + Redis worker that routes tickets, calculates a deterministic spam score, and saves a summary
 - Alembic migration, seed script, Docker Compose, and unit tests
 
@@ -54,6 +54,7 @@ Stop services with `docker compose down`. Add `-v` only when you intentionally w
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness check |
+| `GET` | `/ready` | Readiness check (verifies database connectivity) |
 | `POST` | `/v1/tickets` | Create a ticket and enqueue background enrichment |
 | `GET` | `/v1/tickets/{id}` | Retrieve ticket plus event history |
 | `GET` | `/v1/tickets?page=1&page_size=20&status=OPEN&priority=HIGH&category=PAYMENT` | Paginated, filterable list |
@@ -64,7 +65,7 @@ Create a ticket:
 ```bash
 curl -X POST http://localhost:8000/v1/tickets \
   -H 'content-type: application/json' \
-  -d '{"customer_name":"Ava Sharma","customer_email":"ava@example.com","subject":"Card payment pending","description":"My card payment has been pending for more than 24 hours.","priority":"HIGH","category":"PAYMENT"}'
+  -d '{"customer_name":"Ava Sharma","customer_email":"ava@gmail.com","subject":"Card payment pending","description":"My card payment has been pending for more than 24 hours.","priority":"HIGH","category":"PAYMENT"}'
 ```
 
 Move it into progress:
@@ -75,10 +76,10 @@ curl -X PATCH http://localhost:8000/v1/tickets/1/status \
   -d '{"status":"IN_PROGRESS","actor":"agent:ava"}'
 ```
 
-Error responses consistently include a request ID:
+Error responses consistently include a machine-readable error code, a safe message, validation details where relevant, and a request ID. The same ID is returned in `X-Request-ID` and included in JSON logs.
 
 ```json
-{"error":"validation_error","detail":"...","request_id":"..."}
+{"error":"validation_error","message":"Request validation failed","request_id":"...","details":[{"location":["body","subject"],"message":"Field required","type":"missing"}]}
 ```
 
 ## Configuration
@@ -90,6 +91,8 @@ Error responses consistently include a request ID:
 | `AUTO_PROCESS_TICKETS` | `true` | Enqueue enrichment after creation |
 | `LOG_LEVEL` | `INFO` | Application log verbosity |
 | `ENVIRONMENT` | `development` | Environment label in startup logs |
+
+Configuration is validated at startup: `ENVIRONMENT` must be `development`, `test`, `staging`, or `production`; `LOG_LEVEL` must be a Python logging level; database and Redis URLs must use supported schemes. Logs are emitted as JSON to standard output with timestamps, request IDs, route, status code, and duration.
 
 ## Local development
 

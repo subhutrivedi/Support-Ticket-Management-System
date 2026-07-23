@@ -7,21 +7,21 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
 
-class TicketStatus(str, enum.Enum):
+class TicketStatus(enum.StrEnum):
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"
     RESOLVED = "RESOLVED"
     CLOSED = "CLOSED"
 
 
-class TicketPriority(str, enum.Enum):
+class TicketPriority(enum.StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     URGENT = "URGENT"
 
 
-class TicketCategory(str, enum.Enum):
+class TicketCategory(enum.StrEnum):
     ACCOUNT = "ACCOUNT"
     BILLING = "BILLING"
     CARD = "CARD"
@@ -83,5 +83,7 @@ class TicketEvent(Base):
     )
     actor: Mapped[str] = mapped_column(String(120), nullable=False)
     metadata_json: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     ticket: Mapped[Ticket] = relationship(back_populates="events")

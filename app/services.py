@@ -1,8 +1,8 @@
 import json
 
-from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.errors import InvalidStateTransitionError, ResourceNotFoundError
 from app.models import Ticket, TicketCategory, TicketEvent, TicketPriority, TicketStatus
 from app.repositories import TicketRepository
 from app.schemas import TicketCreate
@@ -37,22 +37,16 @@ class TicketService:
     def get_ticket(self, ticket_id: int, include_events: bool = False) -> Ticket:
         ticket = self.repo.get(ticket_id, include_events)
         if not ticket:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Ticket {ticket_id} was not found",
-            )
+            raise ResourceNotFoundError(f"Ticket {ticket_id} was not found")
         return ticket
 
     def update_status(self, ticket_id: int, next_status: TicketStatus, actor: str) -> Ticket:
         ticket = self.get_ticket(ticket_id)
         if next_status == ticket.status:
-            raise HTTPException(
-                status_code=422, detail="Ticket is already in the requested status"
-            )
+            raise InvalidStateTransitionError("Ticket is already in the requested status")
         if next_status not in ALLOWED_TRANSITIONS[ticket.status]:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Invalid transition: {ticket.status.value} -> {next_status.value}",
+            raise InvalidStateTransitionError(
+                f"Invalid transition: {ticket.status.value} -> {next_status.value}"
             )
         previous_status = ticket.status
         ticket.status = next_status

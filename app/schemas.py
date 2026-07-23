@@ -60,5 +60,6 @@ class TicketListResponse(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: str
-    detail: str
+    message: str
     request_id: str
+    details: list[dict[str, object]] | None = None

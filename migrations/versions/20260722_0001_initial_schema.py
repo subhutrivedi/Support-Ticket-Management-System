@@ -4,8 +4,8 @@ Revision ID: 202607220001
 Revises:
 Create Date: 2026-07-22
 """
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "202607220001"
@@ -43,8 +43,18 @@ def upgrade() -> None:
         sa.Column("processing_summary", sa.Text()),
         sa.Column("assigned_department", sa.String(80)),
         sa.Column("spam_score", sa.Integer()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
     op.create_index("ix_tickets_customer_email", "tickets", ["customer_email"])
     op.create_index("ix_tickets_status_created_at", "tickets", ["status", "created_at"])
@@ -53,15 +63,29 @@ def upgrade() -> None:
     op.create_table(
         "ticket_events",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("ticket_id", sa.Integer(), sa.ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "ticket_id",
+            sa.Integer(),
+            sa.ForeignKey("tickets.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("event_type", sa.String(50), nullable=False),
         sa.Column("from_status", ticket_status),
         sa.Column("to_status", ticket_status),
         sa.Column("actor", sa.String(120), nullable=False),
         sa.Column("metadata_json", sa.Text()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
     )
-    op.create_index("ix_ticket_events_ticket_id_created_at", "ticket_events", ["ticket_id", "created_at"])
+    op.create_index(
+        "ix_ticket_events_ticket_id_created_at",
+        "ticket_events",
+        ["ticket_id", "created_at"],
+    )
 
 
 def downgrade() -> None:

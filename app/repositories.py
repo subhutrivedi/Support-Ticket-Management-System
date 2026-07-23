@@ -27,9 +27,12 @@ class TicketRepository:
         priority: TicketPriority | None, category: TicketCategory | None,
     ) -> tuple[list[Ticket], int]:
         filters = []
-        if status: filters.append(Ticket.status == status)
-        if priority: filters.append(Ticket.priority == priority)
-        if category: filters.append(Ticket.category == category)
+        if status:
+            filters.append(Ticket.status == status)
+        if priority:
+            filters.append(Ticket.priority == priority)
+        if category:
+            filters.append(Ticket.category == category)
         statement = select(Ticket).where(*filters).order_by(Ticket.created_at.desc())
         items = list(self.db.scalars(statement.offset((page - 1) * page_size).limit(page_size)))
         total = self.db.scalar(select(func.count()).select_from(Ticket).where(*filters)) or 0
