@@ -3,7 +3,17 @@ import json
 from sqlalchemy.orm import Session
 
 from app.core.errors import InvalidStateTransitionError, ResourceNotFoundError
-from app.models import Ticket, TicketCategory, TicketEvent, TicketPriority, TicketStatus
+from app.models import (
+    Actor,
+    ActorType,
+    Agent,
+    Customer,
+    Ticket,
+    TicketCategory,
+    TicketEvent,
+    TicketPriority,
+    TicketStatus,
+)
 from app.repositories import TicketRepository
 from app.schemas import TicketCreate
 
@@ -21,18 +31,80 @@ class TicketService:
         self.repo = TicketRepository(db)
 
     def create_ticket(self, payload: TicketCreate) -> Ticket:
-        ticket = self.repo.create(Ticket(**payload.model_dump()))
+        customer = self._get_or_create_customer(payload.customer_name, str(payload.customer_email))
+        ticket_data = payload.model_dump(exclude={"customer_name", "customer_email"})
+        ticket = self.repo.create(Ticket(customer_id=customer.id, **ticket_data))
         self.repo.add_event(
             TicketEvent(
                 ticket_id=ticket.id,
                 event_type="CREATED",
                 to_status=TicketStatus.OPEN,
-                actor="customer",
+                actor_id=customer.id,
+                actor_type=ActorType.CUSTOMER,
             )
         )
         self.db.commit()
         self.db.refresh(ticket)
         return ticket
+
+    def _get_or_create_customer(self, name: str, email: str) -> Customer:
+        normalized_email = email.lower()
+        customer = self.repo.get_customer_by_email(normalized_email)
+        if customer:
+            if customer.actor.display_name != name:
+                customer.actor.display_name = name
+            return customer
+
+        actor = Actor(
+            actor_type=ActorType.CUSTOMER,
+            display_name=name,
+            external_reference=f"customer:{normalized_email}",
+        )
+        self.db.add(actor)
+        self.db.flush()
+        customer = Customer(id=actor.id, email=normalized_email)
+        self.db.add(customer)
+        self.db.flush()
+        return customer
+
+    def _get_or_create_agent(self, reference: str) -> Agent:
+        actor = self.repo.get_actor_by_reference(reference)
+        if actor:
+            if (
+                actor.actor_type is not ActorType.AGENT
+                or not actor.agent
+                or not actor.agent.is_active
+            ):
+                raise InvalidStateTransitionError("Actor is not an active agent")
+            return actor.agent
+
+        actor = Actor(
+            actor_type=ActorType.AGENT,
+            display_name=reference,
+            external_reference=reference,
+        )
+        self.db.add(actor)
+        self.db.flush()
+        agent = Agent(id=actor.id)
+        self.db.add(agent)
+        self.db.flush()
+        return agent
+
+    def _get_or_create_system_actor(self, reference: str) -> Actor:
+        actor = self.repo.get_actor_by_reference(reference)
+        if actor:
+            if actor.actor_type is not ActorType.SYSTEM:
+                raise RuntimeError(f"Actor reference {reference} is not a system actor")
+            return actor
+
+        actor = Actor(
+            actor_type=ActorType.SYSTEM,
+            display_name=reference,
+            external_reference=reference,
+        )
+        self.db.add(actor)
+        self.db.flush()
+        return actor
 
     def get_ticket(self, ticket_id: int, include_events: bool = False) -> Ticket:
         ticket = self.repo.get(ticket_id, include_events)
@@ -49,6 +121,7 @@ class TicketService:
                 f"Invalid transition: {ticket.status.value} -> {next_status.value}"
             )
         previous_status = ticket.status
+        agent = self._get_or_create_agent(actor)
         ticket.status = next_status
         self.repo.add_event(
             TicketEvent(
@@ -56,7 +129,8 @@ class TicketService:
                 event_type="STATUS_CHANGED",
                 from_status=previous_status,
                 to_status=next_status,
-                actor=actor,
+                actor_id=agent.id,
+                actor_type=ActorType.AGENT,
             )
         )
         self.db.commit()
@@ -75,6 +149,7 @@ class TicketService:
 
     def process_ticket(self, ticket_id: int) -> None:
         ticket = self.get_ticket(ticket_id)
+        system_actor = self._get_or_create_system_actor("worker:ticket-processor")
         routing = {
             TicketCategory.BILLING: "payments",
             TicketCategory.PAYMENT: "payments",
@@ -94,7 +169,8 @@ class TicketService:
             TicketEvent(
                 ticket_id=ticket.id,
                 event_type="AUTO_PROCESSED",
-                actor="worker:ticket-processor",
+                actor_id=system_actor.id,
+                actor_type=ActorType.SYSTEM,
                 metadata_json=json.dumps(
                     {"department": ticket.assigned_department, "spam_score": ticket.spam_score}
                 ),

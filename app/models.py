@@ -2,14 +2,17 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,15 +43,82 @@ class TicketCategory(enum.StrEnum):
     OTHER = "OTHER"
 
 
+class ActorType(enum.StrEnum):
+    CUSTOMER = "CUSTOMER"
+    AGENT = "AGENT"
+    SYSTEM = "SYSTEM"
+
+
+class Actor(Base):
+    __tablename__ = "actors"
+    __table_args__ = (UniqueConstraint("id", "actor_type", name="uq_actors_id_type"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_type: Mapped[ActorType] = mapped_column(
+        Enum(ActorType, name="actor_type"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    external_reference: Mapped[str | None] = mapped_column(String(120), unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    customer: Mapped["Customer | None"] = relationship(back_populates="actor", uselist=False)
+    agent: Mapped["Agent | None"] = relationship(back_populates="actor", uselist=False)
+    events: Mapped[list["TicketEvent"]] = relationship(back_populates="actor")
+
+
+class Customer(Base):
+    __tablename__ = "customers"
+    __table_args__ = (
+        CheckConstraint("actor_type = 'CUSTOMER'", name="ck_customers_actor_type"),
+        ForeignKeyConstraint(
+            ["id", "actor_type"],
+            ["actors.id", "actors.actor_type"],
+            name="fk_customers_actor",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_type: Mapped[ActorType] = mapped_column(
+        Enum(ActorType, name="actor_type"),
+        nullable=False,
+        default=ActorType.CUSTOMER,
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor: Mapped[Actor] = relationship(back_populates="customer")
+    tickets: Mapped[list["Ticket"]] = relationship(back_populates="customer")
+
+
+class Agent(Base):
+    __tablename__ = "agents"
+    __table_args__ = (
+        CheckConstraint("actor_type = 'AGENT'", name="ck_agents_actor_type"),
+        ForeignKeyConstraint(
+            ["id", "actor_type"],
+            ["actors.id", "actors.actor_type"],
+            name="fk_agents_actor",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    actor_type: Mapped[ActorType] = mapped_column(
+        Enum(ActorType, name="actor_type"), nullable=False, default=ActorType.AGENT
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    actor: Mapped[Actor] = relationship(back_populates="agent")
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
     __table_args__ = (
-        CheckConstraint("length(trim(customer_name)) >= 2", name="ck_tickets_customer_name_length"),
-        CheckConstraint(
-            "customer_email = trim(customer_email) "
-            "AND customer_email LIKE '%_@_%.__%'",
-            name="ck_tickets_customer_email_format",
-        ),
         CheckConstraint("length(trim(subject)) >= 3", name="ck_tickets_subject_length"),
         CheckConstraint("length(trim(description)) >= 10", name="ck_tickets_description_length"),
         CheckConstraint(
@@ -67,8 +137,9 @@ class Ticket(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    customer_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    customer_email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
     subject: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[TicketPriority] = mapped_column(
@@ -92,22 +163,30 @@ class Ticket(Base):
     events: Mapped[list["TicketEvent"]] = relationship(
         back_populates="ticket", cascade="all, delete-orphan"
     )
+    customer: Mapped[Customer] = relationship(back_populates="tickets")
 
 
 class TicketEvent(Base):
     __tablename__ = "ticket_events"
     __table_args__ = (
-        CheckConstraint("length(trim(actor)) >= 1", name="ck_ticket_events_actor_nonempty"),
         CheckConstraint(
             "event_type IN ('CREATED', 'STATUS_CHANGED', 'AUTO_PROCESSED')",
             name="ck_ticket_events_event_type",
         ),
         CheckConstraint(
-            "(event_type = 'CREATED' AND from_status IS NULL AND to_status = 'OPEN') "
+            "(event_type = 'CREATED' AND actor_type = 'CUSTOMER' "
+            "AND from_status IS NULL AND to_status = 'OPEN') "
             "OR (event_type = 'STATUS_CHANGED' AND from_status IS NOT NULL "
-            "AND to_status IS NOT NULL AND from_status <> to_status) "
-            "OR (event_type = 'AUTO_PROCESSED' AND from_status IS NULL AND to_status IS NULL)",
+            "AND to_status IS NOT NULL AND from_status <> to_status AND actor_type = 'AGENT') "
+            "OR (event_type = 'AUTO_PROCESSED' AND actor_type = 'SYSTEM' "
+            "AND from_status IS NULL AND to_status IS NULL)",
             name="ck_ticket_events_status_shape",
+        ),
+        ForeignKeyConstraint(
+            ["actor_id", "actor_type"],
+            ["actors.id", "actors.actor_type"],
+            name="fk_ticket_events_actor",
+            ondelete="RESTRICT",
         ),
         Index("ix_ticket_events_ticket_id_created_at", "ticket_id", "created_at"),
     )
@@ -123,9 +202,13 @@ class TicketEvent(Base):
     to_status: Mapped[TicketStatus | None] = mapped_column(
         Enum(TicketStatus, name="ticket_status")
     )
-    actor: Mapped[str] = mapped_column(String(120), nullable=False)
+    actor_id: Mapped[int] = mapped_column(nullable=False)
+    actor_type: Mapped[ActorType] = mapped_column(
+        Enum(ActorType, name="actor_type"), nullable=False
+    )
     metadata_json: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     ticket: Mapped[Ticket] = relationship(back_populates="events")
+    actor: Mapped[Actor] = relationship(back_populates="events")

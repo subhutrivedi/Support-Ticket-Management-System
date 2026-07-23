@@ -77,6 +77,7 @@ def test_list_filters_and_pagination(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.json()["total"] == 1
     assert response.json()["items"][0]["category"] == "PAYMENT"
+    assert response.json()["items"][0]["customer"]["email"] == "jane@gmail.com"
 
 
 def test_readiness_checks_database(client: TestClient) -> None:

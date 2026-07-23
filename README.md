@@ -5,7 +5,7 @@ A production-style support ticket API designed for a fintech operating model: ti
 ## What is included
 
 - FastAPI REST API with OpenAPI documentation at `/docs` and `/openapi.json`
-- PostgreSQL relational model: `tickets` plus immutable-style `ticket_events` audit history
+- PostgreSQL relational model: normalized `customers`, `agents`, typed `actors`, tickets, and audit events
 - Enum-backed priority, category, and lifecycle statuses
 - Pagination and filters for status, priority, and category
 - Service/repository separation, typed Pydantic DTOs, request validation, structured error envelope, request IDs, JSON logging, and readiness checks
@@ -28,7 +28,7 @@ The API persists the ticket and its `CREATED` event in one database transaction 
 
 ### Data model choices
 
-`tickets` is the current operational projection. `ticket_events` holds the time-ordered audit trail and has a compound index on `(ticket_id, created_at)`. Ticket list filters use compound indexes paired with `created_at` for common operational queries. Database enums prevent invalid category, priority, and status values. Check constraints enforce meaningful ticket fields, a bounded `spam_score`, complete async-enrichment output, and the valid shape of each audit event—even for direct database writes.
+`actors` is the shared identity root, classified as `CUSTOMER`, `AGENT`, or `SYSTEM`; `customers` and `agents` are typed profiles over that identity. Tickets reference `customers.id`, so names and emails are not duplicated per ticket. Events reference the composite `(actor_id, actor_type)` foreign key, which prevents a mismatched actor type from being recorded. `ticket_events` holds the time-ordered audit trail and has a compound index on `(ticket_id, created_at)`. Ticket list filters use compound indexes paired with `created_at` for common operational queries. Database enums prevent invalid category, priority, status, and actor-type values. Check constraints enforce meaningful ticket fields, a bounded `spam_score`, complete async-enrichment output, and the valid shape of each audit event—even for direct database writes.
 
 ## Quick start
 
@@ -112,7 +112,7 @@ ruff check .
 
 ## Production considerations
 
-- Authentication/authorization is intentionally out of assignment scope; production should add customer and agent identities plus tenant scoping.
+- Authentication/authorization is intentionally out of assignment scope; production should resolve the authenticated principal to the existing customer/agent identities and enforce tenant scoping.
 - Use an outbox pattern, idempotency key, dead-letter queue, metrics/tracing, secrets manager, and managed PostgreSQL/Redis in deployment.
 - The worker task is retryable and persists its result; routing and spam scoring are deterministic stubs ready to be replaced with policy or ML integrations.
 - Keep database migrations forward-only in deployed environments and run them as an explicit release step.

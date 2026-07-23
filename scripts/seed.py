@@ -1,6 +1,8 @@
-"""Idempotent-ish local seed data. Run after `alembic upgrade head`."""
+"""Idempotent local seed data. Run after `alembic upgrade head`."""
 from app.db import SessionLocal
-from app.models import Ticket, TicketCategory, TicketEvent, TicketPriority, TicketStatus
+from app.models import Ticket, TicketCategory, TicketPriority
+from app.schemas import TicketCreate
+from app.services import TicketService
 
 
 def main() -> None:
@@ -9,26 +11,16 @@ def main() -> None:
         if db.query(Ticket).count():
             print("Seed skipped: tickets already exist")
             return
-        ticket = Ticket(
+        ticket = TicketService(db).create_ticket(
+            TicketCreate(
             customer_name="Ava Sharma",
             customer_email="ava@gmail.com",
             subject="Card payment pending",
             description="My card payment has been pending for more than 24 hours.",
             priority=TicketPriority.HIGH,
             category=TicketCategory.PAYMENT,
-            status=TicketStatus.OPEN,
-        )
-        db.add(ticket)
-        db.flush()
-        db.add(
-            TicketEvent(
-                ticket_id=ticket.id,
-                event_type="CREATED",
-                to_status=TicketStatus.OPEN,
-                actor="seed",
             )
         )
-        db.commit()
         print(f"Created ticket #{ticket.id}")
     finally:
         db.close()

@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AliasPath, BaseModel, ConfigDict, EmailStr, Field
 
-from app.models import TicketCategory, TicketPriority, TicketStatus
+from app.models import ActorType, TicketCategory, TicketPriority, TicketStatus
 
 
 class TicketCreate(BaseModel):
@@ -16,7 +16,26 @@ class TicketCreate(BaseModel):
 
 class TicketStatusUpdate(BaseModel):
     status: TicketStatus
-    actor: str = Field(default="agent:api", min_length=3, max_length=120)
+    actor: str = Field(
+        default="agent:api",
+        min_length=3,
+        max_length=120,
+        description="Stable agent reference. Authentication would supply this in production.",
+    )
+
+
+class CustomerResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    email: EmailStr
+    name: str = Field(validation_alias=AliasPath("actor", "display_name"))
+
+
+class ActorResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    actor_type: ActorType
+    display_name: str
 
 
 class TicketEventResponse(BaseModel):
@@ -25,7 +44,7 @@ class TicketEventResponse(BaseModel):
     event_type: str
     from_status: TicketStatus | None
     to_status: TicketStatus | None
-    actor: str
+    actor: ActorResponse
     metadata_json: str | None
     created_at: datetime
 
@@ -33,8 +52,7 @@ class TicketEventResponse(BaseModel):
 class TicketResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
-    customer_name: str
-    customer_email: EmailStr
+    customer: CustomerResponse
     subject: str
     description: str
     priority: TicketPriority
