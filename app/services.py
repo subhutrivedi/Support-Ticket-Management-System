@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -8,6 +9,7 @@ from app.models import (
     ActorType,
     Agent,
     Customer,
+    ProcessingStatus,
     Ticket,
     TicketCategory,
     TicketEvent,
@@ -147,8 +149,38 @@ class TicketService:
     ) -> tuple[list[Ticket], int]:
         return self.repo.list(page, page_size, status, priority, category)
 
-    def process_ticket(self, ticket_id: int) -> None:
+    def begin_processing(self, ticket_id: int, task_id: str) -> bool:
         ticket = self.get_ticket(ticket_id)
+        if ticket.processing_status in {ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING}:
+            return False
+        ticket.processing_status = ProcessingStatus.PROCESSING
+        ticket.processing_task_id = task_id
+        ticket.processing_attempts += 1
+        ticket.processing_error = None
+        ticket.processing_started_at = datetime.now(UTC)
+        self.db.commit()
+        return True
+
+    def mark_processing_failed(
+        self, ticket_id: int, task_id: str, error: Exception, retrying: bool
+    ) -> None:
+        ticket = self.get_ticket(ticket_id)
+        if (
+            ticket.processing_task_id != task_id
+            or ticket.processing_status is ProcessingStatus.COMPLETED
+        ):
+            return
+        ticket.processing_status = ProcessingStatus.PENDING if retrying else ProcessingStatus.FAILED
+        ticket.processing_error = str(error)[:1000]
+        self.db.commit()
+
+    def process_ticket(self, ticket_id: int, task_id: str) -> None:
+        ticket = self.get_ticket(ticket_id)
+        if (
+            ticket.processing_status is not ProcessingStatus.PROCESSING
+            or ticket.processing_task_id != task_id
+        ):
+            return
         system_actor = self._get_or_create_system_actor("worker:ticket-processor")
         routing = {
             TicketCategory.BILLING: "payments",
@@ -165,6 +197,8 @@ class TicketService:
             f"{ticket.subject[:100]}. Routed to {ticket.assigned_department}; "
             f"automated spam score: {ticket.spam_score}."
         )
+        ticket.processing_status = ProcessingStatus.COMPLETED
+        ticket.processing_completed_at = datetime.now(UTC)
         self.repo.add_event(
             TicketEvent(
                 ticket_id=ticket.id,

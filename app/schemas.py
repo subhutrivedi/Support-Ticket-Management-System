@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import AliasPath, BaseModel, ConfigDict, EmailStr, Field
 
-from app.models import ActorType, TicketCategory, TicketPriority, TicketStatus
+from app.models import ActorType, ProcessingStatus, TicketCategory, TicketPriority, TicketStatus
 
 
 class TicketCreate(BaseModel):
@@ -61,6 +61,11 @@ class TicketResponse(BaseModel):
     processing_summary: str | None
     assigned_department: str | None
     spam_score: int | None
+    processing_status: ProcessingStatus
+    processing_attempts: int
+    processing_error: str | None
+    processing_started_at: datetime | None
+    processing_completed_at: datetime | None
     created_at: datetime
     updated_at: datetime
 

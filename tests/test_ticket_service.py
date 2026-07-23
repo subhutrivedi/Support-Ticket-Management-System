@@ -106,18 +106,40 @@ def test_processing_enriches_ticket(db: Session) -> None:
             category=TicketCategory.PAYMENT,
         )
     )
-    service.process_ticket(ticket.id)
+    assert service.begin_processing(ticket.id, "task-1")
+    service.process_ticket(ticket.id, "task-1")
     processed = service.get_ticket(ticket.id, include_events=True)
     assert processed.assigned_department == "payments"
     assert processed.processing_summary is not None
     assert any(event.event_type == "AUTO_PROCESSED" for event in processed.events)
+    assert processed.processing_status.value == "COMPLETED"
+
+
+def test_duplicate_processing_task_is_idempotently_skipped(db: Session) -> None:
+    service = TicketService(db)
+    ticket = service.create_ticket(
+        TicketCreate(
+            customer_name="Jane Doe",
+            customer_email="jane@gmail.com",
+            subject="Need payment help",
+            description="I need help finding a completed bank payment.",
+            category=TicketCategory.PAYMENT,
+        )
+    )
+
+    assert service.begin_processing(ticket.id, "task-1")
+    service.process_ticket(ticket.id, "task-1")
+    assert not service.begin_processing(ticket.id, "task-2")
+
+    stored = service.get_ticket(ticket.id, include_events=True)
+    assert len([event for event in stored.events if event.event_type == "AUTO_PROCESSED"]) == 1
 
 
 def test_database_rejects_invalid_enrichment_state(db: Session) -> None:
     ticket = TicketService(db).create_ticket(
         TicketCreate(
             customer_name="Jane Doe",
-            customer_email="jane@example.com",
+            customer_email="jane@gmail.com",
             subject="Need payment help",
             description="I need help finding a completed bank payment.",
             category=TicketCategory.PAYMENT,
@@ -133,7 +155,7 @@ def test_database_rejects_invalid_audit_event_shape(db: Session) -> None:
     ticket = TicketService(db).create_ticket(
         TicketCreate(
             customer_name="Jane Doe",
-            customer_email="jane@example.com",
+            customer_email="jane@gmail.com",
             subject="Need payment help",
             description="I need help finding a completed bank payment.",
             category=TicketCategory.PAYMENT,

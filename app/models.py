@@ -49,6 +49,13 @@ class ActorType(enum.StrEnum):
     SYSTEM = "SYSTEM"
 
 
+class ProcessingStatus(enum.StrEnum):
+    PENDING = "PENDING"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
 class Actor(Base):
     __tablename__ = "actors"
     __table_args__ = (UniqueConstraint("id", "actor_type", name="uq_actors_id_type"),)
@@ -154,6 +161,16 @@ class Ticket(Base):
     processing_summary: Mapped[str | None] = mapped_column(Text)
     assigned_department: Mapped[str | None] = mapped_column(String(80))
     spam_score: Mapped[int | None] = mapped_column(Integer)
+    processing_status: Mapped[ProcessingStatus] = mapped_column(
+        Enum(ProcessingStatus, name="processing_status"),
+        nullable=False,
+        default=ProcessingStatus.PENDING,
+    )
+    processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processing_error: Mapped[str | None] = mapped_column(Text)
+    processing_task_id: Mapped[str | None] = mapped_column(String(50), unique=True)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
