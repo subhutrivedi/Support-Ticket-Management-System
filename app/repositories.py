@@ -36,6 +36,14 @@ class TicketRepository:
     def get_actor_by_reference(self, reference: str) -> Actor | None:
         return self.db.scalar(select(Actor).where(Actor.external_reference == reference))
 
+    def get_by_idempotency_key(self, key: str) -> Ticket | None:
+        statement = (
+            select(Ticket)
+            .where(Ticket.idempotency_key == key)
+            .options(selectinload(Ticket.customer).selectinload(Customer.actor))
+        )
+        return self.db.scalar(statement)
+
     def get(self, ticket_id: int, include_events: bool = False) -> Ticket | None:
         statement: Select[tuple[Ticket]] = select(Ticket).where(Ticket.id == ticket_id)
         if include_events:

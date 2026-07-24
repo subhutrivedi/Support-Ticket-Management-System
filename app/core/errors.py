@@ -17,3 +17,8 @@ class ResourceNotFoundError(DomainError):
 class InvalidStateTransitionError(DomainError):
     status_code = 422
     error_code = "invalid_state_transition"
+
+
+class IdempotencyKeyConflictError(DomainError):
+    status_code = 409
+    error_code = "idempotency_key_conflict"

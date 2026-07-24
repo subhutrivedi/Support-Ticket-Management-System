@@ -1,6 +1,14 @@
+import hashlib
+import json
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.core.errors import InvalidStateTransitionError, ResourceNotFoundError
+from app.core.errors import (
+    IdempotencyKeyConflictError,
+    InvalidStateTransitionError,
+    ResourceNotFoundError,
+)
 from app.models import (
     Actor,
     ActorType,
@@ -30,9 +38,60 @@ class TicketService:
         self.repo = TicketRepository(db)
 
     def create_ticket(self, payload: TicketCreate) -> Ticket:
+        return self._create_ticket(payload)
+
+    def create_ticket_idempotent(
+        self, payload: TicketCreate, idempotency_key: str | None
+    ) -> tuple[Ticket, bool]:
+        if not idempotency_key:
+            return self._create_ticket(payload), True
+
+        request_hash = self._request_hash(payload)
+        existing = self.repo.get_by_idempotency_key(idempotency_key)
+        if existing:
+            self._ensure_matching_request(existing, request_hash)
+            return existing, False
+
+        try:
+            return self._create_ticket(payload, idempotency_key, request_hash), True
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.repo.get_by_idempotency_key(idempotency_key)
+            if not existing:
+                raise
+            self._ensure_matching_request(existing, request_hash)
+            return existing, False
+
+    @staticmethod
+    def _request_hash(payload: TicketCreate) -> str:
+        serialized = json.dumps(
+            payload.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+        )
+        return hashlib.sha256(serialized.encode()).hexdigest()
+
+    @staticmethod
+    def _ensure_matching_request(ticket: Ticket, request_hash: str) -> None:
+        if ticket.idempotency_request_hash != request_hash:
+            raise IdempotencyKeyConflictError(
+                "Idempotency-Key was already used with a different request payload"
+            )
+
+    def _create_ticket(
+        self,
+        payload: TicketCreate,
+        idempotency_key: str | None = None,
+        request_hash: str | None = None,
+    ) -> Ticket:
         customer = self._get_or_create_customer(payload.customer_name, str(payload.customer_email))
         ticket_data = payload.model_dump(exclude={"customer_name", "customer_email"})
-        ticket = self.repo.create(Ticket(customer_id=customer.id, **ticket_data))
+        ticket = self.repo.create(
+            Ticket(
+                customer_id=customer.id,
+                idempotency_key=idempotency_key,
+                idempotency_request_hash=request_hash,
+                **ticket_data,
+            )
+        )
         self.repo.add_event(
             TicketEvent(
                 ticket_id=ticket.id,

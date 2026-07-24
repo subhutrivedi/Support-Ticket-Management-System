@@ -67,6 +67,11 @@ class Ticket(Base):
             "AND spam_score IS NOT NULL)",
             name="ck_tickets_processing_fields_complete",
         ),
+        CheckConstraint(
+            "(idempotency_key IS NULL AND idempotency_request_hash IS NULL) "
+            "OR (idempotency_key IS NOT NULL AND idempotency_request_hash IS NOT NULL)",
+            name="ck_tickets_idempotency_fields_complete",
+        ),
         Index("ix_tickets_status_created_at", "status", "created_at"),
         Index("ix_tickets_priority_created_at", "priority", "created_at"),
         Index("ix_tickets_category_created_at", "category", "created_at"),
@@ -97,6 +102,8 @@ class Ticket(Base):
     processing_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     processing_error: Mapped[str | None] = mapped_column(Text)
     processing_task_id: Mapped[str | None] = mapped_column(String(50), unique=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), unique=True)
+    idempotency_request_hash: Mapped[str | None] = mapped_column(String(64))
     processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

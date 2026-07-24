@@ -148,7 +148,7 @@ Interactive documentation at `/docs` is the source of truth for request and resp
 | `GET` | `/health` | Liveness probe. |
 | `GET` | `/ready` | Readiness probe; verifies database connectivity. |
 | `GET` | `/metrics` | Prometheus-format application metrics. |
-| `POST` | `/v1/tickets` | Create a ticket, audit event, and processing intent. |
+| `POST` | `/v1/tickets` | Create a ticket, audit event, and processing intent; supports `Idempotency-Key`. |
 | `GET` | `/v1/tickets/{ticket_id}` | Fetch a ticket and its event history. |
 | `GET` | `/v1/tickets` | List tickets; accepts `page`, `page_size`, `status`, `priority`, and `category`. |
 | `PATCH` | `/v1/tickets/{ticket_id}/status` | Apply a validated status transition as an agent. |
@@ -158,6 +158,7 @@ Create a ticket:
 ```bash
 curl -X POST http://localhost:8000/v1/tickets \
   -H 'content-type: application/json' \
+  -H 'Idempotency-Key: ticket-create-ava-001' \
   -d '{
     "customer_name": "Ava Sharma",
     "customer_email": "ava@example.com",
@@ -167,6 +168,10 @@ curl -X POST http://localhost:8000/v1/tickets \
     "category": "PAYMENT"
   }'
 ```
+
+Repeat a creation request safely by reusing the same `Idempotency-Key` with the identical
+payload. The first request returns `201`; retries return the original ticket with `200`.
+Reusing a key with a different payload returns `409 idempotency_key_conflict`.
 
 Move ticket `1` into progress:
 
@@ -237,7 +242,7 @@ The test suite covers API response contracts, validation errors, filtering and p
 - **At-least-once delivery:** the transactional outbox makes the database intent durable and the worker is designed to safely skip completed/in-progress work. A broker publish can still be retried, so processing remains deliberately idempotent rather than assuming exactly-once delivery.
 - **Dead-letter persistence, not a managed DLQ:** terminal worker failures are stored in PostgreSQL for inspection. A larger deployment could additionally route them to a broker-native DLQ and alerting workflow.
 - **Metrics endpoint, not full observability platform:** `/metrics` is scrape-ready and request logs include correlation IDs. Production would add a Prometheus/Grafana deployment, distributed tracing, dashboards, SLOs, and alerting.
-- **Single-service, synchronous REST API:** pagination is offset-based and suitable for assignment-scale data. High-volume feeds would use cursor pagination, rate limits, request-size limits, idempotency keys, and stronger query budgets.
+- **Single-service, synchronous REST API:** pagination is offset-based and suitable for assignment-scale data. Ticket creation supports an `Idempotency-Key`; high-volume feeds would additionally use cursor pagination, rate limits, request-size limits, and stronger query budgets.
 - **Migration ownership:** the append-only trigger protects normal SQL writes; privileged database operators can still alter schema or permissions. Production audit requirements may call for restricted database roles or a dedicated audit store.
 
 ## Continuous integration

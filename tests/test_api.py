@@ -85,3 +85,29 @@ def test_readiness_checks_database(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
+
+
+def test_ticket_creation_is_idempotent_for_matching_request(client: TestClient) -> None:
+    headers = {"Idempotency-Key": "ticket-create-demo-001"}
+
+    first = client.post("/v1/tickets", json=ticket_payload(), headers=headers)
+    repeated = client.post("/v1/tickets", json=ticket_payload(), headers=headers)
+
+    assert first.status_code == 201
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == first.json()["id"]
+
+
+def test_idempotency_key_cannot_be_reused_for_different_payload(client: TestClient) -> None:
+    headers = {"Idempotency-Key": "ticket-create-demo-002"}
+
+    first = client.post("/v1/tickets", json=ticket_payload(), headers=headers)
+    conflict = client.post(
+        "/v1/tickets",
+        json=ticket_payload() | {"subject": "A different ticket subject"},
+        headers=headers,
+    )
+
+    assert first.status_code == 201
+    assert conflict.status_code == 409
+    assert conflict.json()["error"] == "idempotency_key_conflict"

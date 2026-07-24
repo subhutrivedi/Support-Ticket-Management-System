@@ -3,7 +3,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
@@ -141,10 +141,20 @@ def readiness(db: Session = Depends(get_db)) -> dict[str, str]:
     status_code=status.HTTP_201_CREATED,
     tags=["tickets"],
 )
-def create_ticket(payload: TicketCreate, db: Session = Depends(get_db)) -> TicketResponse:
-    ticket = TicketService(db).create_ticket(payload)
-    ticket_creation_counter.inc()
-    if settings.auto_process_tickets:
+def create_ticket(
+    payload: TicketCreate,
+    response: Response,
+    idempotency_key: str | None = Header(
+        None, alias="Idempotency-Key", min_length=8, max_length=128
+    ),
+    db: Session = Depends(get_db),
+) -> TicketResponse:
+    ticket, created = TicketService(db).create_ticket_idempotent(payload, idempotency_key)
+    if created:
+        ticket_creation_counter.inc()
+    else:
+        response.status_code = status.HTTP_200_OK
+    if created and settings.auto_process_tickets:
         dispatch_outbox_messages.delay()
     return TicketResponse.model_validate(ticket)
 
