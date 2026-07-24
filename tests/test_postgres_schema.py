@@ -10,6 +10,11 @@ from app.models import DeadLetterMessage, ProcessingStatus, TicketCategory
 from app.schemas import TicketCreate
 from app.services import ProcessingService, TicketService
 
+pytestmark = pytest.mark.skipif(
+    not os.getenv("POSTGRES_INTEGRATION_URL"),
+    reason="requires the PostgreSQL integration database",
+)
+
 
 def create_ticket(db: Session):
     identifier = uuid4().hex
@@ -24,10 +29,6 @@ def create_ticket(db: Session):
     )
 
 
-@pytest.mark.skipif(
-    not os.getenv("POSTGRES_INTEGRATION_URL"),
-    reason="requires the PostgreSQL integration database",
-)
 def test_postgres_migrations_create_required_schema() -> None:
     engine = create_engine(os.environ["POSTGRES_INTEGRATION_URL"])
     inspector = inspect(engine)
