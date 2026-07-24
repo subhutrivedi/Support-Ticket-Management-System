@@ -106,7 +106,9 @@ When the logs show Uvicorn is running, open:
 - Readiness (checks PostgreSQL): <http://localhost:8000/ready>
 - Metrics: <http://localhost:8000/metrics>
 
-In another terminal, load one idempotent sample ticket:
+In another terminal, load the 20-ticket idempotent demo dataset. It covers every category,
+priority, and lifecycle state, plus repeated customers, multiple agents, completed processing,
+and a spam-like ticket:
 
 ```bash
 docker compose exec api python scripts/seed.py
@@ -224,7 +226,7 @@ celery -A app.worker.celery_app beat --loglevel=INFO
 
 ## Database migrations and tests
 
-Migrations are forward Alembic revisions in `migrations/versions/`; apply them with `alembic upgrade head`. The seed script is safe to rerun: it skips insertion once tickets exist.
+Migrations are forward Alembic revisions in `migrations/versions/`; apply them with `alembic upgrade head`. The seed script is safe to rerun: it creates only missing named demo scenarios and reuses existing ones through their idempotency keys.
 
 Run static checks and tests:
 
