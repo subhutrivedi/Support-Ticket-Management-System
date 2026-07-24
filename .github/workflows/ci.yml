@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: ticketflow
+          POSTGRES_USER: ticketflow
+          POSTGRES_PASSWORD: ticketflow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ticketflow -d ticketflow"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://ticketflow:ticketflow@localhost:5432/ticketflow
+      POSTGRES_INTEGRATION_URL: postgresql+psycopg://ticketflow:ticketflow@localhost:5432/ticketflow
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e '.[dev]'
+      - run: alembic upgrade head
+      - run: ruff check app tests migrations scripts
+      - run: pytest
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build
+      - run: sh scripts/compose_smoke_test.sh
+      - if: always()
+        run: docker compose down -v
