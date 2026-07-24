@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.core.errors import ResourceNotFoundError
@@ -45,14 +46,28 @@ class ProcessingService:
         return actor
 
     def begin(self, ticket_id: int, task_id: str) -> bool:
-        ticket = self._get_ticket(ticket_id)
-        if ticket.processing_status in {ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING}:
+        """Atomically claim a pending ticket for one worker.
+
+        The status predicate makes duplicate Celery deliveries safe under concurrent workers:
+        only one transaction can move a ticket from PENDING to PROCESSING.
+        """
+        claim = self.db.execute(
+            update(Ticket)
+            .where(
+                Ticket.id == ticket_id,
+                Ticket.processing_status == ProcessingStatus.PENDING,
+            )
+            .values(
+                processing_status=ProcessingStatus.PROCESSING,
+                processing_task_id=task_id,
+                processing_attempts=Ticket.processing_attempts + 1,
+                processing_error=None,
+                processing_started_at=datetime.now(UTC),
+            )
+        )
+        if claim.rowcount == 0:
+            self._get_ticket(ticket_id)
             return False
-        ticket.processing_status = ProcessingStatus.PROCESSING
-        ticket.processing_task_id = task_id
-        ticket.processing_attempts += 1
-        ticket.processing_error = None
-        ticket.processing_started_at = datetime.now(UTC)
         self.db.commit()
         return True
 
