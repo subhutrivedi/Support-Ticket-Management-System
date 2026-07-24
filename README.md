@@ -203,7 +203,8 @@ Use Python 3.12+ and provide reachable PostgreSQL and Redis instances. The defau
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install -e '.[dev]'
+pip install --requirement requirements-dev.lock
+pip install --no-deps -e .
 alembic upgrade head
 python scripts/seed.py
 uvicorn app.main:app --reload

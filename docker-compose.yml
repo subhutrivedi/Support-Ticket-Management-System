@@ -14,6 +14,13 @@ services:
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
   worker:
     build: .
     command: celery -A app.worker.celery_app worker --loglevel=INFO
@@ -28,7 +35,7 @@ services:
       redis: { condition: service_healthy }
   beat:
     build: .
-    command: celery -A app.worker.celery_app beat --loglevel=INFO
+    command: celery -A app.worker.celery_app beat --loglevel=INFO --schedule /tmp/celerybeat-schedule
     volumes: [".:/app"]
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://ticketflow:ticketflow@db:5432/ticketflow}
