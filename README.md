@@ -1,8 +1,6 @@
 # TicketFlow
 
-TicketFlow is a production-minded support-ticket API built for the backend engineering assignment. It accepts and tracks customer tickets, enforces a ticket lifecycle, retains an append-only audit trail, and performs asynchronous deterministic triage through Celery and Redis.
-
-The project is intentionally small enough to review quickly, while showing the engineering boundaries expected of a service that could evolve into a fintech support workflow.
+TicketFlow is a production-minded support-ticket API built for a fintech model. It accepts and tracks customer tickets, enforces a ticket lifecycle, retains an append-only audit trail, and performs asynchronous deterministic triage through Celery and Redis.
 
 ## Project overview
 
@@ -23,8 +21,8 @@ The worker is deliberately deterministic—not an LLM agent. It is the correct a
 ```text
                          ┌─────────────────────────────────┐
                          │            PostgreSQL           │
-Client ──HTTP──> FastAPI │ tickets · identities · events    │
-              │          │ outbox · dead letters            │
+Client ──HTTP──> FastAPI │ tickets · identities · events   │
+              │          │ outbox · dead letters           │
               │          └─────────────────────────────────┘
               │                          │
               └── creates ticket + event + outbox intent ───┘
