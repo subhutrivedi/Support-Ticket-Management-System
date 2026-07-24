@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose up -d --build
+      - run: docker compose up -d --build --wait --wait-timeout 90
       - run: sh scripts/compose_smoke_test.sh
       - if: always()
         run: docker compose down -v
