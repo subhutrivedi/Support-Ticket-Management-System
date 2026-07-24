@@ -96,7 +96,10 @@ class ProcessingService:
         ticket.spam_score = (
             90 if "http" in ticket.description.lower() and "urgent" in ticket.subject.lower() else 3
         )
-        ticket.processing_summary = f"{ticket.subject[:100]}. Routed to {ticket.assigned_department}; automated spam score: {ticket.spam_score}."
+        ticket.processing_summary = (
+            f"{ticket.subject[:100]}. Routed to {ticket.assigned_department}; "
+            f"automated spam score: {ticket.spam_score}."
+        )
         ticket.processing_status = ProcessingStatus.COMPLETED
         ticket.processing_completed_at = datetime.now(UTC)
         self.repo.add_event(

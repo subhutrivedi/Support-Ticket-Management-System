@@ -1,74 +1,174 @@
 # TicketFlow
 
-A production-style support ticket API designed for a fintech operating model: tickets are auditable, status changes are constrained, and new tickets are enriched asynchronously by a worker.
+TicketFlow is a production-minded support-ticket API built for the backend engineering assignment. It accepts and tracks customer tickets, enforces a ticket lifecycle, retains an append-only audit trail, and performs asynchronous deterministic triage through Celery and Redis.
 
-## What is included
+The project is intentionally small enough to review quickly, while showing the engineering boundaries expected of a service that could evolve into a fintech support workflow.
 
-- FastAPI REST API with OpenAPI documentation at `/docs` and `/openapi.json`
-- PostgreSQL relational model: normalized `customers`, `agents`, typed `actors`, tickets, and audit events
-- Enum-backed priority, category, and lifecycle statuses
-- Pagination and filters for status, priority, and category
-- Service/repository separation, typed Pydantic DTOs, request validation, structured error envelope, request IDs, JSON logging, and readiness checks
-- Celery + Redis worker that routes tickets, calculates a deterministic spam score, and saves a summary
-- Alembic migration, seed script, Docker Compose, and unit tests
+## Project overview
 
-## Architecture
+### Capabilities
+
+- Create a ticket with validated customer, subject, description, category, and priority data.
+- Retrieve one ticket with its complete event history.
+- List tickets with page-based pagination and optional status, priority, and category filters.
+- Enforce valid lifecycle transitions: `OPEN`, `IN_PROGRESS`, `RESOLVED`, and `CLOSED`.
+- Persist an immutable event for ticket creation, status changes, and automatic processing.
+- Process new tickets asynchronously: route to a department, generate a deterministic summary, and record a bounded spam score.
+- Expose liveness, database-readiness, Prometheus-format metrics, structured errors, request IDs, and JSON logs.
+
+The worker is deliberately deterministic—not an LLM agent. It is the correct asynchronous integration point for future policy, ML, or LLM triage, without requiring external API credentials for this assignment.
+
+## Architecture and design decisions
 
 ```text
-Client -> FastAPI API -> TicketService -> TicketRepository -> PostgreSQL
-                  |                                  |
-                  +-> Celery task -> Redis -> Worker -+
+                         ┌─────────────────────────────────┐
+                         │            PostgreSQL           │
+Client ──HTTP──> FastAPI │ tickets · identities · events    │
+              │          │ outbox · dead letters            │
+              │          └─────────────────────────────────┘
+              │                          │
+              └── creates ticket + event + outbox intent ───┘
+                                         │
+                              Celery relay task / Beat
+                                         │
+                                    Redis broker
+                                         │
+                                   Celery worker
+                                         │
+                         durable processing state + event
 ```
 
-The API persists the ticket and its `CREATED` event in one database transaction before enqueueing. In a larger system, this handoff should use an outbox table and relay process to guarantee delivery across the database/broker boundary; that tradeoff keeps this assignment implementation compact while making the production direction explicit.
+### Layering
 
-### Ticket lifecycle
+The code is organised by responsibility, without introducing unnecessary framework layers:
 
-`OPEN -> IN_PROGRESS -> RESOLVED -> CLOSED`, with `OPEN -> CLOSED` and `RESOLVED -> IN_PROGRESS` also permitted. A closed ticket is terminal. Every accepted state change writes a `STATUS_CHANGED` event.
+```text
+app/
+├── core/              # Settings, domain errors, structured logging
+├── models/            # SQLAlchemy entities and database-backed enums
+│   ├── identity.py    # Actor, Customer, Agent
+│   ├── tickets.py     # Ticket, TicketEvent, ticket lifecycle enums
+│   └── processing.py  # OutboxMessage and DeadLetterMessage
+├── services/          # Business use cases
+│   ├── tickets.py     # Ticket creation, querying, lifecycle transitions
+│   └── processing.py  # Worker lifecycle, idempotency, triage result
+├── repositories.py    # Query and persistence access for ticket workflows
+├── schemas.py         # Pydantic request/response DTOs
+├── main.py            # HTTP routes, error mapping, observability endpoints
+└── worker.py          # Celery tasks and transactional-outbox relay
+migrations/            # Forward Alembic schema migrations
+scripts/seed.py        # Idempotent local seed data
+tests/                 # API, service, and PostgreSQL schema coverage
+```
 
-### Data model choices
+- **DTOs at the API boundary:** Pydantic schemas validate input and define stable response contracts. FastAPI generates OpenAPI from these schemas.
+- **Service and repository separation:** routes remain thin; services own business rules and transaction boundaries; the repository owns query construction.
+- **Configuration:** typed settings load from environment variables and fail fast for invalid environment, log level, database URL, or Redis URL.
+- **Errors and logs:** expected failures use a consistent JSON error envelope. Each response carries `X-Request-ID`, which is also included in structured JSON request logs.
+- **Lifecycle validation:** transition rules are explicit in the ticket service. A closed ticket is terminal.
 
-`actors` is the shared identity root, classified as `CUSTOMER`, `AGENT`, or `SYSTEM`; `customers` and `agents` are typed profiles over that identity. Tickets reference `customers.id`, so names and emails are not duplicated per ticket. Events reference the composite `(actor_id, actor_type)` foreign key, which prevents a mismatched actor type from being recorded. `ticket_events` holds the time-ordered audit trail and has a compound index on `(ticket_id, created_at)`. A PostgreSQL trigger rejects all updates and deletes from this table, making the audit trail append-only for normal database roles. Ticket list filters use compound indexes paired with `created_at` for common operational queries. Database enums prevent invalid category, priority, status, and actor-type values. Check constraints enforce meaningful ticket fields, a bounded `spam_score`, complete async-enrichment output, and the valid shape of each audit event—even for direct database writes.
+### Data integrity and audit design
 
-## Quick start
+The database is designed to protect important invariants even if writes bypass the API:
 
-Prerequisites: Docker Desktop and Docker Compose.
+- `actors` is the identity root, typed as `CUSTOMER`, `AGENT`, or `SYSTEM`.
+- `customers` and `agents` are typed profiles over an actor. `tickets.customer_id` avoids copying customer names and emails onto every ticket.
+- `ticket_events` references the typed actor identity with a composite foreign key. Database checks restrict which actor type and status fields are valid for each event kind.
+- PostgreSQL enums protect ticket priority, category, status, actor type, processing state, and outbox state.
+- Check constraints validate ticket text length, the 0–100 spam-score range, complete processing output, and event shape.
+- Filter indexes support common list queries; `(ticket_id, created_at)` supports chronological event retrieval.
+- A PostgreSQL trigger rejects `UPDATE` and `DELETE` on `ticket_events`, enforcing append-only audit history at the database layer.
+
+### Reliable asynchronous processing
+
+Ticket creation commits the ticket, its `CREATED` audit event, and an `outbox_messages` record in one transaction. A Celery relay publishes committed outbox messages to Redis; Celery Beat runs the relay every ten seconds as an eventual-delivery backstop.
+
+The worker persists `PENDING`, `PROCESSING`, `COMPLETED`, or `FAILED` state, attempt count, task ID, timestamps, and safe error text on the ticket. Re-delivered tasks are skipped once processing is completed or already in progress. Celery retries failures up to three times with exponential backoff; a final failure is persisted to `dead_letter_messages` for investigation.
+
+## Quick start with Docker Compose
+
+### Prerequisites
+
+- Docker Desktop (includes Docker Compose)
+- Port `8000` available on your machine
+
+Start the API, PostgreSQL, Redis, Celery worker, and Celery Beat:
 
 ```bash
 docker compose up --build
 ```
 
-The API is available at `http://localhost:8000`, with interactive docs at `http://localhost:8000/docs`.
-Compose has secure-for-local-development defaults, so no configuration file is required to start. Copy `.env.example` to `.env` only when you want to override them.
+When the logs show Uvicorn is running, open:
 
-In another terminal, add example data:
+- API documentation: <http://localhost:8000/docs>
+- OpenAPI JSON: <http://localhost:8000/openapi.json>
+- Liveness: <http://localhost:8000/health>
+- Readiness (checks PostgreSQL): <http://localhost:8000/ready>
+- Metrics: <http://localhost:8000/metrics>
+
+In another terminal, load one idempotent sample ticket:
 
 ```bash
 docker compose exec api python scripts/seed.py
 ```
 
-Stop services with `docker compose down`. Add `-v` only when you intentionally want to remove local PostgreSQL data.
+Run in the background with `docker compose up -d --build`, inspect logs with `docker compose logs -f api worker beat`, and stop services with:
 
-## API
+```bash
+docker compose down
+```
 
-| Method | Endpoint | Purpose |
+`docker compose down` preserves the local PostgreSQL volume. Use `docker compose down -v` only when you intentionally want to delete local database data.
+
+## Environment variables
+
+Docker Compose provides local development defaults, so a `.env` file is optional. To override them, copy the template and edit it:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Compose default | Purpose |
 |---|---|---|
-| `GET` | `/health` | Liveness check |
-| `GET` | `/ready` | Readiness check (verifies database connectivity) |
-| `POST` | `/v1/tickets` | Create a ticket and enqueue background enrichment |
-| `GET` | `/v1/tickets/{id}` | Retrieve ticket plus event history |
-| `GET` | `/v1/tickets?page=1&page_size=20&status=OPEN&priority=HIGH&category=PAYMENT` | Paginated, filterable list |
-| `PATCH` | `/v1/tickets/{id}/status` | Make a validated agent status transition |
+| `APP_NAME` | `TicketFlow API` | Application name used in generated API documentation. |
+| `ENVIRONMENT` | `development` | One of `development`, `test`, `staging`, or `production`. |
+| `DATABASE_URL` | `postgresql+psycopg://ticketflow:ticketflow@db:5432/ticketflow` | SQLAlchemy PostgreSQL connection URL. |
+| `REDIS_URL` | `redis://redis:6379/0` | Celery broker and result-backend URL. |
+| `LOG_LEVEL` | `INFO` | Python logging level, for example `DEBUG` or `WARNING`. |
+| `AUTO_PROCESS_TICKETS` | `true` | Whether ticket creation immediately asks Celery to relay the outbox; Beat still relays pending intents. |
+
+The Compose database password is intentionally a local-only convenience. Do not use it outside local development; inject production secrets through a managed secret store.
+
+## API guide
+
+Interactive documentation at `/docs` is the source of truth for request and response schemas. The primary endpoints are:
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness probe. |
+| `GET` | `/ready` | Readiness probe; verifies database connectivity. |
+| `GET` | `/metrics` | Prometheus-format application metrics. |
+| `POST` | `/v1/tickets` | Create a ticket, audit event, and processing intent. |
+| `GET` | `/v1/tickets/{ticket_id}` | Fetch a ticket and its event history. |
+| `GET` | `/v1/tickets` | List tickets; accepts `page`, `page_size`, `status`, `priority`, and `category`. |
+| `PATCH` | `/v1/tickets/{ticket_id}/status` | Apply a validated status transition as an agent. |
 
 Create a ticket:
 
 ```bash
 curl -X POST http://localhost:8000/v1/tickets \
   -H 'content-type: application/json' \
-  -d '{"customer_name":"Ava Sharma","customer_email":"ava@gmail.com","subject":"Card payment pending","description":"My card payment has been pending for more than 24 hours.","priority":"HIGH","category":"PAYMENT"}'
+  -d '{
+    "customer_name": "Ava Sharma",
+    "customer_email": "ava@example.com",
+    "subject": "Card payment pending",
+    "description": "My card payment has been pending for more than 24 hours.",
+    "priority": "HIGH",
+    "category": "PAYMENT"
+  }'
 ```
 
-Move it into progress:
+Move ticket `1` into progress:
 
 ```bash
 curl -X PATCH http://localhost:8000/v1/tickets/1/status \
@@ -76,27 +176,29 @@ curl -X PATCH http://localhost:8000/v1/tickets/1/status \
   -d '{"status":"IN_PROGRESS","actor":"agent:ava"}'
 ```
 
-Error responses consistently include a machine-readable error code, a safe message, validation details where relevant, and a request ID. The same ID is returned in `X-Request-ID` and included in JSON logs.
+Allowed transitions are:
 
-```json
-{"error":"validation_error","message":"Request validation failed","request_id":"...","details":[{"location":["body","subject"],"message":"Field required","type":"missing"}]}
+```text
+OPEN        -> IN_PROGRESS, CLOSED
+IN_PROGRESS -> RESOLVED, CLOSED
+RESOLVED    -> IN_PROGRESS, CLOSED
+CLOSED      -> (terminal)
 ```
 
-## Configuration
+Errors have one predictable shape and carry the request ID needed to find the corresponding log entry:
 
-| Variable | Default / expected value | Purpose |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL SQLAlchemy URL | API and worker database connection |
-| `REDIS_URL` | `redis://redis:6379/0` in Compose | Celery broker and result backend |
-| `AUTO_PROCESS_TICKETS` | `true` | Enqueue enrichment after creation |
-| `LOG_LEVEL` | `INFO` | Application log verbosity |
-| `ENVIRONMENT` | `development` | Environment label in startup logs |
+```json
+{
+  "error": "validation_error",
+  "message": "Request validation failed",
+  "request_id": "...",
+  "details": [{"location": ["body", "subject"], "message": "Field required", "type": "missing"}]
+}
+```
 
-Configuration is validated at startup: `ENVIRONMENT` must be `development`, `test`, `staging`, or `production`; `LOG_LEVEL` must be a Python logging level; database and Redis URLs must use supported schemes. Logs are emitted as JSON to standard output with timestamps, request IDs, route, status code, and duration.
+## Running without Docker
 
-## Local development
-
-With Python 3.12 and a running PostgreSQL/Redis instance:
+Use Python 3.12+ and provide reachable PostgreSQL and Redis instances. The default URLs in application settings target `localhost`; set `DATABASE_URL` and `REDIS_URL` if yours differ.
 
 ```bash
 python -m venv .venv
@@ -105,14 +207,38 @@ pip install -e '.[dev]'
 alembic upgrade head
 python scripts/seed.py
 uvicorn app.main:app --reload
-celery -A app.worker.celery_app worker --loglevel=INFO
-pytest
-ruff check .
 ```
 
-## Production considerations
+In separate terminals (with the same virtual environment and configuration), start the worker and scheduled outbox relay:
 
-- Authentication/authorization is intentionally out of assignment scope; production should resolve the authenticated principal to the existing customer/agent identities and enforce tenant scoping.
-- Use an outbox pattern, idempotency key, dead-letter queue, metrics/tracing, secrets manager, and managed PostgreSQL/Redis in deployment.
-- The worker task is retryable and persists its result; routing and spam scoring are deterministic stubs ready to be replaced with policy or ML integrations.
-- Keep database migrations forward-only in deployed environments and run them as an explicit release step.
+```bash
+celery -A app.worker.celery_app worker --loglevel=INFO
+celery -A app.worker.celery_app beat --loglevel=INFO
+```
+
+## Database migrations and tests
+
+Migrations are forward Alembic revisions in `migrations/versions/`; apply them with `alembic upgrade head`. The seed script is safe to rerun: it skips insertion once tickets exist.
+
+Run static checks and tests:
+
+```bash
+ruff check app tests migrations scripts
+pytest
+```
+
+The test suite covers API response contracts, validation errors, filtering and pagination, status transitions, asynchronous-processing idempotency, and PostgreSQL-specific schema guarantees. Set `POSTGRES_INTEGRATION_URL` to run the PostgreSQL schema test locally; the GitHub Actions pipeline supplies it automatically, applies migrations, runs Ruff and pytest, and performs a Docker Compose smoke test.
+
+## Tradeoffs and assumptions
+
+- **No authentication or authorization:** this is assignment scope. In production, authentication would resolve the caller to a customer or agent identity, enforce tenant isolation, and remove the client-controlled `actor` field from status updates.
+- **Deterministic triage, not AI:** routing and spam scoring are deliberately explainable stubs. A real model integration should include prompt/model versioning, PII controls, evaluation, fallbacks, cost limits, and human review.
+- **At-least-once delivery:** the transactional outbox makes the database intent durable and the worker is designed to safely skip completed/in-progress work. A broker publish can still be retried, so processing remains deliberately idempotent rather than assuming exactly-once delivery.
+- **Dead-letter persistence, not a managed DLQ:** terminal worker failures are stored in PostgreSQL for inspection. A larger deployment could additionally route them to a broker-native DLQ and alerting workflow.
+- **Metrics endpoint, not full observability platform:** `/metrics` is scrape-ready and request logs include correlation IDs. Production would add a Prometheus/Grafana deployment, distributed tracing, dashboards, SLOs, and alerting.
+- **Single-service, synchronous REST API:** pagination is offset-based and suitable for assignment-scale data. High-volume feeds would use cursor pagination, rate limits, request-size limits, idempotency keys, and stronger query budgets.
+- **Migration ownership:** the append-only trigger protects normal SQL writes; privileged database operators can still alter schema or permissions. Production audit requirements may call for restricted database roles or a dedicated audit store.
+
+## Continuous integration
+
+Every push and pull request runs GitHub Actions. The test job starts PostgreSQL, applies migrations, runs Ruff, and executes pytest (including PostgreSQL-only checks). A separate job builds the Compose stack and verifies `/health`, `/ready`, and ticket creation end to end.

@@ -7,8 +7,7 @@ from app.core.errors import InvalidStateTransitionError
 from app.db import Base
 from app.models import ActorType, TicketCategory, TicketEvent, TicketPriority, TicketStatus
 from app.schemas import TicketCreate
-from app.services import TicketService
-from app.services import ProcessingService
+from app.services import ProcessingService, TicketService
 
 
 @pytest.fixture
