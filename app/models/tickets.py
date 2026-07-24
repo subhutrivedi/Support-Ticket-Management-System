@@ -1,8 +1,8 @@
 import enum
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
-    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -12,12 +12,15 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+from app.models.identity import Actor, ActorType, Customer
+
+if TYPE_CHECKING:
+    from app.models.processing import OutboxMessage
 
 
 class TicketStatus(enum.StrEnum):
@@ -43,89 +46,11 @@ class TicketCategory(enum.StrEnum):
     OTHER = "OTHER"
 
 
-class ActorType(enum.StrEnum):
-    CUSTOMER = "CUSTOMER"
-    AGENT = "AGENT"
-    SYSTEM = "SYSTEM"
-
-
 class ProcessingStatus(enum.StrEnum):
     PENDING = "PENDING"
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
-
-
-class OutboxStatus(enum.StrEnum):
-    PENDING = "PENDING"
-    PUBLISHED = "PUBLISHED"
-
-
-class Actor(Base):
-    __tablename__ = "actors"
-    __table_args__ = (UniqueConstraint("id", "actor_type", name="uq_actors_id_type"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    actor_type: Mapped[ActorType] = mapped_column(
-        Enum(ActorType, name="actor_type"), nullable=False
-    )
-    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    external_reference: Mapped[str | None] = mapped_column(String(120), unique=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    customer: Mapped["Customer | None"] = relationship(back_populates="actor", uselist=False)
-    agent: Mapped["Agent | None"] = relationship(back_populates="actor", uselist=False)
-    events: Mapped[list["TicketEvent"]] = relationship(back_populates="actor")
-
-
-class Customer(Base):
-    __tablename__ = "customers"
-    __table_args__ = (
-        CheckConstraint("actor_type = 'CUSTOMER'", name="ck_customers_actor_type"),
-        ForeignKeyConstraint(
-            ["id", "actor_type"],
-            ["actors.id", "actors.actor_type"],
-            name="fk_customers_actor",
-            ondelete="RESTRICT",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    actor_type: Mapped[ActorType] = mapped_column(
-        Enum(ActorType, name="actor_type"),
-        nullable=False,
-        default=ActorType.CUSTOMER,
-    )
-    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    actor: Mapped[Actor] = relationship(back_populates="customer")
-    tickets: Mapped[list["Ticket"]] = relationship(back_populates="customer")
-
-
-class Agent(Base):
-    __tablename__ = "agents"
-    __table_args__ = (
-        CheckConstraint("actor_type = 'AGENT'", name="ck_agents_actor_type"),
-        ForeignKeyConstraint(
-            ["id", "actor_type"],
-            ["actors.id", "actors.actor_type"],
-            name="fk_agents_actor",
-            ondelete="RESTRICT",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    actor_type: Mapped[ActorType] = mapped_column(
-        Enum(ActorType, name="actor_type"), nullable=False, default=ActorType.AGENT
-    )
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    actor: Mapped[Actor] = relationship(back_populates="agent")
 
 
 class Ticket(Base):
@@ -134,8 +59,7 @@ class Ticket(Base):
         CheckConstraint("length(trim(subject)) >= 3", name="ck_tickets_subject_length"),
         CheckConstraint("length(trim(description)) >= 10", name="ck_tickets_description_length"),
         CheckConstraint(
-            "spam_score IS NULL OR spam_score BETWEEN 0 AND 100",
-            name="ck_tickets_spam_score_range",
+            "spam_score IS NULL OR spam_score BETWEEN 0 AND 100", name="ck_tickets_spam_score_range"
         ),
         CheckConstraint(
             "(processing_summary IS NULL AND assigned_department IS NULL AND spam_score IS NULL) "
@@ -147,7 +71,6 @@ class Ticket(Base):
         Index("ix_tickets_priority_created_at", "priority", "created_at"),
         Index("ix_tickets_category_created_at", "category", "created_at"),
     )
-
     id: Mapped[int] = mapped_column(primary_key=True)
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -213,7 +136,6 @@ class TicketEvent(Base):
         ),
         Index("ix_ticket_events_ticket_id_created_at", "ticket_id", "created_at"),
     )
-
     id: Mapped[int] = mapped_column(primary_key=True)
     ticket_id: Mapped[int] = mapped_column(
         ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False
@@ -222,9 +144,7 @@ class TicketEvent(Base):
     from_status: Mapped[TicketStatus | None] = mapped_column(
         Enum(TicketStatus, name="ticket_status")
     )
-    to_status: Mapped[TicketStatus | None] = mapped_column(
-        Enum(TicketStatus, name="ticket_status")
-    )
+    to_status: Mapped[TicketStatus | None] = mapped_column(Enum(TicketStatus, name="ticket_status"))
     actor_id: Mapped[int] = mapped_column(nullable=False)
     actor_type: Mapped[ActorType] = mapped_column(
         Enum(ActorType, name="actor_type"), nullable=False
@@ -235,40 +155,3 @@ class TicketEvent(Base):
     )
     ticket: Mapped[Ticket] = relationship(back_populates="events")
     actor: Mapped[Actor] = relationship(back_populates="events")
-
-
-class OutboxMessage(Base):
-    __tablename__ = "outbox_messages"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    ticket_id: Mapped[int] = mapped_column(
-        ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False
-    )
-    topic: Mapped[str] = mapped_column(String(80), nullable=False)
-    status: Mapped[OutboxStatus] = mapped_column(
-        Enum(OutboxStatus, name="outbox_status"),
-        nullable=False,
-        default=OutboxStatus.PENDING,
-    )
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_error: Mapped[str | None] = mapped_column(Text)
-    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    ticket: Mapped[Ticket] = relationship(back_populates="outbox_messages")
-
-
-class DeadLetterMessage(Base):
-    __tablename__ = "dead_letter_messages"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    ticket_id: Mapped[int] = mapped_column(
-        ForeignKey("tickets.id", ondelete="RESTRICT"), nullable=False
-    )
-    task_id: Mapped[str] = mapped_column(String(50), nullable=False)
-    error: Mapped[str] = mapped_column(Text, nullable=False)
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )

@@ -1,6 +1,3 @@
-import json
-from datetime import UTC, datetime
-
 from sqlalchemy.orm import Session
 
 from app.core.errors import InvalidStateTransitionError, ResourceNotFoundError
@@ -9,9 +6,7 @@ from app.models import (
     ActorType,
     Agent,
     Customer,
-    DeadLetterMessage,
     OutboxMessage,
-    ProcessingStatus,
     Ticket,
     TicketCategory,
     TicketEvent,
@@ -95,22 +90,6 @@ class TicketService:
         self.db.flush()
         return agent
 
-    def _get_or_create_system_actor(self, reference: str) -> Actor:
-        actor = self.repo.get_actor_by_reference(reference)
-        if actor:
-            if actor.actor_type is not ActorType.SYSTEM:
-                raise RuntimeError(f"Actor reference {reference} is not a system actor")
-            return actor
-
-        actor = Actor(
-            actor_type=ActorType.SYSTEM,
-            display_name=reference,
-            external_reference=reference,
-        )
-        self.db.add(actor)
-        self.db.flush()
-        return actor
-
     def get_ticket(self, ticket_id: int, include_events: bool = False) -> Ticket:
         ticket = self.repo.get(ticket_id, include_events)
         if not ticket:
@@ -151,75 +130,3 @@ class TicketService:
         category: TicketCategory | None,
     ) -> tuple[list[Ticket], int]:
         return self.repo.list(page, page_size, status, priority, category)
-
-    def begin_processing(self, ticket_id: int, task_id: str) -> bool:
-        ticket = self.get_ticket(ticket_id)
-        if ticket.processing_status in {ProcessingStatus.COMPLETED, ProcessingStatus.PROCESSING}:
-            return False
-        ticket.processing_status = ProcessingStatus.PROCESSING
-        ticket.processing_task_id = task_id
-        ticket.processing_attempts += 1
-        ticket.processing_error = None
-        ticket.processing_started_at = datetime.now(UTC)
-        self.db.commit()
-        return True
-
-    def mark_processing_failed(
-        self, ticket_id: int, task_id: str, error: Exception, retrying: bool
-    ) -> None:
-        ticket = self.get_ticket(ticket_id)
-        if (
-            ticket.processing_task_id != task_id
-            or ticket.processing_status is ProcessingStatus.COMPLETED
-        ):
-            return
-        ticket.processing_status = ProcessingStatus.PENDING if retrying else ProcessingStatus.FAILED
-        ticket.processing_error = str(error)[:1000]
-        if not retrying:
-            self.db.add(
-                DeadLetterMessage(
-                    ticket_id=ticket.id,
-                    task_id=task_id,
-                    error=ticket.processing_error,
-                    attempts=ticket.processing_attempts,
-                )
-            )
-        self.db.commit()
-
-    def process_ticket(self, ticket_id: int, task_id: str) -> None:
-        ticket = self.get_ticket(ticket_id)
-        if (
-            ticket.processing_status is not ProcessingStatus.PROCESSING
-            or ticket.processing_task_id != task_id
-        ):
-            return
-        system_actor = self._get_or_create_system_actor("worker:ticket-processor")
-        routing = {
-            TicketCategory.BILLING: "payments",
-            TicketCategory.PAYMENT: "payments",
-            TicketCategory.CARD: "card-operations",
-            TicketCategory.ACCOUNT: "identity",
-            TicketCategory.TECHNICAL: "platform",
-            TicketCategory.OTHER: "general-support",
-        }
-        ticket.assigned_department = routing[ticket.category]
-        is_suspicious = "http" in ticket.description.lower() and "urgent" in ticket.subject.lower()
-        ticket.spam_score = 90 if is_suspicious else 3
-        ticket.processing_summary = (
-            f"{ticket.subject[:100]}. Routed to {ticket.assigned_department}; "
-            f"automated spam score: {ticket.spam_score}."
-        )
-        ticket.processing_status = ProcessingStatus.COMPLETED
-        ticket.processing_completed_at = datetime.now(UTC)
-        self.repo.add_event(
-            TicketEvent(
-                ticket_id=ticket.id,
-                event_type="AUTO_PROCESSED",
-                actor_id=system_actor.id,
-                actor_type=ActorType.SYSTEM,
-                metadata_json=json.dumps(
-                    {"department": ticket.assigned_department, "spam_score": ticket.spam_score}
-                ),
-            )
-        )
-        self.db.commit()

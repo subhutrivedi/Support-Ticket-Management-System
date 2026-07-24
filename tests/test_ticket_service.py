@@ -8,6 +8,7 @@ from app.db import Base
 from app.models import ActorType, TicketCategory, TicketEvent, TicketPriority, TicketStatus
 from app.schemas import TicketCreate
 from app.services import TicketService
+from app.services import ProcessingService
 
 
 @pytest.fixture
@@ -106,8 +107,9 @@ def test_processing_enriches_ticket(db: Session) -> None:
             category=TicketCategory.PAYMENT,
         )
     )
-    assert service.begin_processing(ticket.id, "task-1")
-    service.process_ticket(ticket.id, "task-1")
+    processing = ProcessingService(db)
+    assert processing.begin(ticket.id, "task-1")
+    processing.complete(ticket.id, "task-1")
     processed = service.get_ticket(ticket.id, include_events=True)
     assert processed.assigned_department == "payments"
     assert processed.processing_summary is not None
@@ -127,9 +129,10 @@ def test_duplicate_processing_task_is_idempotently_skipped(db: Session) -> None:
         )
     )
 
-    assert service.begin_processing(ticket.id, "task-1")
-    service.process_ticket(ticket.id, "task-1")
-    assert not service.begin_processing(ticket.id, "task-2")
+    processing = ProcessingService(db)
+    assert processing.begin(ticket.id, "task-1")
+    processing.complete(ticket.id, "task-1")
+    assert not processing.begin(ticket.id, "task-2")
 
     stored = service.get_ticket(ticket.id, include_events=True)
     assert len([event for event in stored.events if event.event_type == "AUTO_PROCESSED"]) == 1
